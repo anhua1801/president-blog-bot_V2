@@ -1,7 +1,7 @@
 from flask import Flask, request, Response, render_template, stream_with_context
-from faiss_rag import RAGHandler
-from csv_db_rag import search_Index 
-from check_file import check_file_exists
+from core.faiss_rag import RAGHandler
+from core.csv_db_rag import search_Index 
+from utils.check_file import check_file_exists
 from langchain.vectorstores.faiss import FAISS
 from langchain_openai import AzureOpenAIEmbeddings
 from openai import AzureOpenAI
