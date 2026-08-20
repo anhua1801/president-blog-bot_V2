@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>社長ボット</title>
+    <link rel="icon" href="{{ url_for('static', filename='images/bot-icon.png') }}" type="image/png">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/index.css') }}">
+	</head>
+
+	<body>
+		<script type="importmap">
+			{
+				"imports": {
+					"three": "https://cdn.jsdelivr.net/npm/three@0.167.0/build/three.module.js",
+					"three/addons/": "https://cdn.jsdelivr.net/npm/three@0.167.0/examples/jsm/",
+					"@pixiv/three-vrm": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@2.1.0/lib/three-vrm.module.js",
+					"@pixiv/three-vrm-animation": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm-animation@3.1.3/lib/three-vrm-animation.module.min.js"
+				}
+			}
+		</script>
+
+        <div id="left-container">
+            <!-- 変更 -->
+            <!-- <canvas id="canvas"></canvas> -->
+            <div id="loading-container">
+                <p>モデルを読み込んでいます...</p>
+                <progress id="loading-progress" value="0" max="100"></progress>
+            </div>
+            <canvas id="canvas" style="display:none;"></canvas>            
+        </div>
+        <div id="right-container">
+            <div class="chat-container">
+                <div id="chat-messages" class="chat-messages">
+                    <div class="message assistant">
+                        <div class="avatar">
+                            <img src="/static/images/bot-icon.png" alt="Bot" style="width: 40px; height: 40px; border-radius: 50%;">
+                        </div>
+                        <div class="message-content">こんにちは！どのようなことでお手伝いできますか？</div>
+                    </div>
+                </div>
+                <div class="chat-input">
+                    <textarea id="user-input" placeholder="メッセージを入力..."></textarea>
+                    <button id="send-button">送信</button>
+                </div>
+            </div>
+        </div>
+        <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>  
+
+		<script type="module">
+            import * as THREE from 'three';
+            import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+            import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+            import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
+            import { createVRMAnimationClip, VRMAnimationLoaderPlugin } from '@pixiv/three-vrm-animation';
+        
+            const animations = {};
+            const expressionTransitionDuration = 0.2;
+            const clock = new THREE.Clock();  // clockをここで初期化
+            let inactivityTimeout = null;  // 一定時間操作がない場合のタイマー
+            const inactivityLimit = 60 * 1000;  // 1分（60秒）
+            
+            // アニメーション設定
+            const Starting_vrma = '/static/motions/vrma/挨拶.vrma'                  //起動時に再生するアニメーション
+            const StanBy_vrma = '/static/motions/vrma/屈伸運動.vrma'                //一定時間経過後、操作がない場合に再生するアニメーション
+            const Thinking_vrma = '/static/motions/vrma/vpdloop_thinking.vrma'     //回答準備中に再生するアニメーション
+            const Answering_vrma = '/static/motions/vrma/vpdloop_answering.vrma'   //回答生成完了時に再生するアニメーション
+
+            // 待機モーションを繰り返す関数
+            function resetInactivityTimer() {
+                clearTimeout(inactivityTimeout);
+                inactivityTimeout = setTimeout(() => {
+                    playAnimation(StanBy_vrma);
+                }, inactivityLimit);
+            }
+        
+            function setExpression(vrm, expressionName, targetValue, clock, duration = expressionTransitionDuration) {
+                if (vrm && vrm.expressionManager) {
+                    const startValue = vrm.expressionManager.getValue(expressionName) || 0.0;
+                    const startTime = clock.getElapsedTime();
+        
+                    const updateExpression = () => {
+                        const elapsedTime = clock.getElapsedTime() - startTime;
+                        const progress = Math.min(elapsedTime / duration, 1.0);
+                        const currentValue = THREE.MathUtils.lerp(startValue, targetValue, progress);
+                        vrm.expressionManager.setValue(expressionName, currentValue);
+                        vrm.expressionManager.update();
+        
+                        if (progress < 1.0) {
+                            requestAnimationFrame(updateExpression);
+                        }
+                    };
+        
+                    requestAnimationFrame(updateExpression);
+                }
+            }
+        
+            function resetExpression(vrm) {
+                ['happy', 'sad', 'relaxed', 'angry', 'neutral', 'lookup'].forEach(name => setExpression(vrm, name, 0, clock));  // clockをここで渡す
+            }
+        
+            // 追加
+            function loadWithProgress(loader, vrmaFile, onLoad) {
+                loader.load(vrmaFile, onLoad, 
+                    // onProgress コールバック
+                    function (xhr) {
+                        const progressPercentage = (xhr.loaded / xhr.total) * 100;
+                        document.getElementById('loading-progress').value = progressPercentage;
+                    }, 
+                    // onError コールバック
+                    function (error) {
+                        console.error(`Failed to load VRMA file: ${vrmaFile}`, error);
+                    }
+                );
+            }
+
+            async function loadVRMAAndSetExpression(loader, vrm, vrmaFile, expressionSettings, clock, loop = true) {
+                    const gltfVrma = await loader.loadAsync(vrmaFile);
+
+                    loadWithProgress(loader, vrmaFile, function (gltfVrma) {
+                    const vrmAnimation = gltfVrma.userData.vrmAnimations[0];
+                    const clip = createVRMAnimationClip(vrmAnimation, vrm);
+                    const mixer = new THREE.AnimationMixer(vrm.scene);
+                    const action = mixer.clipAction(clip);
+
+                    // ループ設定
+                    if (!loop) {
+                        action.loop = THREE.LoopOnce;
+                        action.clampWhenFinished = true;
+                    } else {
+                        action.loop = THREE.LoopRepeat;
+                    }
+
+                    let isFirstLoop = true;
+                    mixer.addEventListener('loop', () => {
+                        resetExpression(vrm);
+                        if (isFirstLoop) {
+                            setExpression(vrm, expressionSettings.start.name, expressionSettings.start.value, clock, expressionSettings.start.duration);
+                            isFirstLoop = false;
+                        } else {
+                            setExpression(vrm, expressionSettings.loop.name, expressionSettings.loop.value, clock, expressionSettings.loop.duration);
+                        }
+                    });
+
+                    animations[vrmaFile] = { mixer, action, clip, expressionSettings, vrm };
+                });
+            }
+        
+            function playAnimation(vrmaFile) {
+                Object.values(animations).forEach(({ action }) => action.stop());
+        
+                const animation = animations[vrmaFile];
+                if (animation) {
+                    resetExpression(animation.vrm);
+                    animation.action.reset().play();
+                    setExpression(animation.vrm, animation.expressionSettings.start.name, animation.expressionSettings.start.value, clock, animation.expressionSettings.start.duration);  // clockを渡す
+                } else {
+                    console.log(`Animation for ${vrmaFile} is not loaded.`);
+                }
+            }
+        
+            (async () => {
+                const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('canvas') });
+                renderer.setSize(window.innerWidth, window.innerHeight);
+                renderer.setPixelRatio(window.devicePixelRatio);
+        
+                const camera = new THREE.PerspectiveCamera(30.0, window.innerWidth / window.innerHeight, 0.1, 20.0);
+                camera.position.set(0, 0.9999999999999997, 2.0906016760958837);
+        
+                const scene = new THREE.Scene();
+
+                const textureLoader = new THREE.TextureLoader();
+                textureLoader.load('/static/images/background.jpg', function(texture) {
+                    scene.background = texture;
+                });
+
+        
+                const light = new THREE.DirectionalLight(0xffffff, Math.PI);
+                light.position.set(1.0, 1.0, 1.0).normalize();
+                scene.add(light);
+        
+                const loader = new GLTFLoader();
+                loader.crossOrigin = 'anonymous';
+        
+                loader.register(parser => new VRMLoaderPlugin(parser));
+                loader.register(parser => new VRMAnimationLoaderPlugin(parser));
+                
+                const gltfVrm = await loader.loadAsync('/static/models/vrm/vrm_model.vrm');
+                const vrm = gltfVrm.userData.vrm;
+        
+                VRMUtils.removeUnnecessaryVertices(vrm.scene);
+                VRMUtils.removeUnnecessaryJoints(vrm.scene);
+        
+                scene.add(vrm.scene);
+        
+                // 挨拶 (ループなし)
+                await loadVRMAAndSetExpression(loader, vrm, Starting_vrma, {
+                    start: { name: 'happy', value: 1.0, duration: 0.3 },
+                    loop: { name: 'happy', value: 1.0, duration: 0.4, delay: 2500 }
+                }, clock, false);  // ループしない設定
+        
+                // 考え中 (ループあり)
+                await loadVRMAAndSetExpression(loader, vrm, Thinking_vrma, {
+                    start: { name: 'sad', value: 0.5, duration: 0.2 },
+                    loop: { name: 'sad', value: 0.5, duration: 0.5, delay: 0 }
+                }, clock, true);  // ループ設定
+        
+                // 答え中 (ループなし)
+                await loadVRMAAndSetExpression(loader, vrm, Answering_vrma, {
+                    start: { name: 'happy', value: 1.0, duration: 0.3 },
+                    loop: { name: 'happy', value: 1.0, duration: 0.4, delay: 1500 }
+                }, clock, false);  // ループしない設定
+        
+                // 屈伸運動 (ループあり)
+                await loadVRMAAndSetExpression(loader, vrm, StanBy_vrma, {
+                    start: { name: 'neutral', value: 1.0, duration: 0.3 },
+                    loop: { name: 'lookup', value: 1.0, duration: 0.4, delay: 1500 }
+                }, clock, true);  // ループ設定
+        
+                playAnimation(Starting_vrma);
+        
+                clock.start();
+                
+                function animate() {
+                    requestAnimationFrame(animate);
+        
+                    const deltaTime = clock.getDelta();
+                    Object.values(animations).forEach(({ mixer }) => mixer.update(deltaTime));
+                    vrm.update(deltaTime);
+                    renderer.render(scene, camera);
+                }
+
+                const chatMessages = document.getElementById('chat-messages');
+                const userInput = document.getElementById('user-input');
+                const sendButton = document.getElementById('send-button');
+
+                function addMessage(role, content, isMarkdown = false) {
+                    const messageDiv = document.createElement('div');
+                    messageDiv.className = `message ${role}`;
+                    const avatarDiv = document.createElement('div');
+                    avatarDiv.className = 'avatar';
+                    const img = document.createElement('img');
+                    img.src = role === 'user' ? '/static/images/user-icon.png' : '/static/images/bot-icon.png';
+                    img.alt = role === 'user' ? 'User' : 'Bot';
+                    img.style.width = '40px';
+                    img.style.height = '40px';
+                    img.style.borderRadius = '50%';
+                    avatarDiv.appendChild(img);
+                    messageDiv.appendChild(avatarDiv);
+                    const contentDiv = document.createElement('div');
+                    contentDiv.className = 'message-content';
+                    contentDiv.innerHTML = isMarkdown ? marked.parse(content) : content;
+                    messageDiv.appendChild(contentDiv);
+                    chatMessages.appendChild(messageDiv);
+                    chatMessages.scrollTop = chatMessages.scrollHeight;
+                }
+
+                function handleSend() {
+                    const message = userInput.value.trim();
+                    if (message) {
+                        userInput.disabled = true;
+                        sendButton.disabled = true;
+
+                        addMessage('user', message);
+                        userInput.value = '';
+
+                        playAnimation(Thinking_vrma);
+                        resetInactivityTimer();  // 操作があった場合にタイマーをリセット
+
+                        fetch('/chat', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                            },
+                            body: JSON.stringify({ message }),
+                        }).then(response => {
+                            const reader = response.body.getReader();
+                            const botMessageDiv = document.createElement('div');
+                            botMessageDiv.className = 'message assistant';
+                            const botAvatarDiv = document.createElement('div');
+                            botAvatarDiv.className = 'avatar';
+                            const botImg = document.createElement('img');
+                            botImg.src = '/static/images/bot-icon.png';
+                            botImg.alt = 'Bot';
+                            botImg.style.width = '40px';
+                            botImg.style.height = '40px';
+                            botImg.style.borderRadius = '50%';
+                            botAvatarDiv.appendChild(botImg);
+                            botMessageDiv.appendChild(botAvatarDiv);
+                            const botMessageContent = document.createElement('div');
+                            botMessageContent.className = 'message-content';
+                            botMessageDiv.appendChild(botMessageContent);
+                            chatMessages.appendChild(botMessageDiv);
+                            let buffer = "";
+
+                            function readStream() {
+                                reader.read().then(({ done, value }) => {
+                                    if (done) {
+                                        // ストリームの最後にマークダウン解析を行う
+                                        botMessageContent.innerHTML = marked.parse(botMessageContent.textContent.trim());
+                                        playAnimation(Answering_vrma);
+                                        resetInactivityTimer();
+
+                                        // ユーザーの入力欄と送信ボタンを再度有効化
+                                        userInput.disabled = false;
+                                        sendButton.disabled = false;
+                                        userInput.focus();
+                                        return;
+                                    }
+
+                                    // 取得したデータをリアルタイムで表示
+                                    const decodedValue = new TextDecoder().decode(value);
+                                    let index = 0;
+                                    const chunkSize = 10;  // 1度に表示する文字数（調整可能）
+
+                                    function updateText() {
+                                        if (index < decodedValue.length) {
+                                            // 指定されたサイズごとに文字を追加
+                                            const nextChunk = decodedValue.slice(index, index + chunkSize);
+                                            botMessageContent.textContent += nextChunk;
+                                            chatMessages.scrollTop = chatMessages.scrollHeight;
+                                            index += chunkSize;
+
+                                            // 少し遅延させて次の文字列を表示
+                                            setTimeout(updateText, 50);  // 50msごとに次のチャンクを表示（調整可能）
+                                        } else {
+                                            // 全ての文字が表示されたら次のチャンクを読み込む
+                                            readStream();
+                                        }
+                                    }
+
+                                    // 初回の呼び出し
+                                    updateText();
+                                });
+                            }
+
+                            readStream();
+                        });
+                    }
+                }
+
+                sendButton.addEventListener('click', () => {
+                    handleSend();
+                });
+
+                // userInput.addEventListener('input', () => {
+                //     startIdleTimer();
+                // });
+
+                userInput.addEventListener('keydown', (event) => {
+                    if (event.key === 'Enter' && !event.shiftKey) {
+                        event.preventDefault();
+                        sendButton.click();
+                    }
+                });
+        
+                // ユーザーの操作（クリックやキーボードの操作）を監視し、タイマーをリセット
+                window.addEventListener('click', resetInactivityTimer);
+                window.addEventListener('keydown', resetInactivityTimer);
+        
+                resetInactivityTimer();  // 初回タイマーセット
+                // // 変更
+                document.getElementById('loading-container').style.display = 'none';
+                document.getElementById('canvas').style.display = 'block';
+
+                animate();
+            })();
+        </script>        
+	</body>
+</html>

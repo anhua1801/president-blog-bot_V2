@@ -1,9 +1,9 @@
+from datetime import datetime
 import re
 import os
 from flask import Response, stream_with_context
-from langchain.vectorstores.faiss import FAISS
+from langchain_community.vectorstores import FAISS
 from langchain_openai import AzureChatOpenAI, AzureOpenAIEmbeddings
-from openai import AzureOpenAI
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -11,51 +11,86 @@ LLM_MODELS = os.environ["LLM_MODELS"]
 FILE_PATH = os.environ["FILE_PATH"]
 MODE = os.environ["MODE"]
 
-class RAGHandler:
-    def __init__(self, embedding, client, character_prompt, system_prompt):
+class load_bot:
+    def __init__(self, embedding, llm, character_prompt, system_prompt):
         if MODE == "csv_index":
             self.retriever =None
         else:
-            vector_store = FAISS.load_local(f"{FILE_PATH}/db/faiss", embeddings=embedding, allow_dangerous_deserialization=True)
-            self.retriever = vector_store.as_retriever(search_type="similarity", search_kwargs={"k": 5})
-        self.client = client
+            self.vector_store = FAISS.load_local(f"{FILE_PATH}/data/faiss", embeddings=embedding, allow_dangerous_deserialization=True)
+        self.llm = llm
         self.character_prompt = character_prompt
-        self.system_prompt_template = system_prompt
+        self.system_prompt = system_prompt
         self.response_data = []
+        self.today = datetime.now().strftime("%Y年%m月%d日")
 
+    def parse_date(self, date_str):
+        try:
+            return datetime.strptime(date_str, "%d/%m/%Y %H:%M")
+        except ValueError:
+            return None
+
+    def important_information(self):
+        blogs = {}  # title -> date_string, to avoid duplicates due to chunks
+
+        for doc_id, doc in self.vector_store.docstore._dict.items():
+            title = doc.metadata.get("title")
+            date = doc.metadata.get("date")
+            if title and date:
+                blogs[title] = date  # Save the latest date for each title, overwriting duplicates
+
+        last_blog, last_blog_date = None, None
+        current_blogs = len(blogs)
+        for title, date_str in blogs.items():
+            date = self.parse_date(date_str)
+            if date and (last_blog_date is None or date > last_blog_date):
+                last_blog, last_blog_date = title, date
+
+        return current_blogs, last_blog, last_blog_date
+
+
+    #Used to fetch relevant documents from the vector store based on the user message
     def fetch_relevant_docs(self, user_message):
-        retrieved_docs = self.retriever.invoke(user_message)
-        contents = [
-            re.search(r"Contents:\s*(.*)", doc.page_content).group(1)
-            for doc in retrieved_docs if re.search(r"Contents:\s*(.*)", doc.page_content)
-        ]
+        retrieved_docs = self.vector_store.similarity_search(user_message, k=10)
+        contents = []
+        for doc in retrieved_docs:
+            # metadata SIEMPRE está en cada chunk, aunque el texto se haya partido
+            date = doc.metadata.get("date", "?")
+            title = doc.metadata.get("title", "?")
+            contents.append(f"【{date} / {title}】\n{doc.page_content}")
+
+        print(f"🔍 Retrieved: {len(retrieved_docs)} docs → {len(contents)} with text")
         return contents
 
-    def update_system_prompt(self, contents):
-        contents_str = "[\n" + ",\n".join(contents) + "\n]"
-        return self.system_prompt_template.replace("nearly_contens", contents_str)
+    def system_prompt_with_context(self, contents, today, last_blog, last_blog_date, current_blogs):
 
-    def generate_stream(self, user_message, updated_system_prompt):
-        stream = self.client.chat.completions.create(
-            model=LLM_MODELS,
-            messages=[
-                {"role": "system", "content": self.character_prompt},
-                {"role": "system", "content": updated_system_prompt},
-                *self.response_data,
-                {"role": "user", "content": user_message}
-            ],
-            stream=True
+        formatted_contents = "\n\n".join(contents) #fetch_relevant_docs returns a list of strings, so we join them into a single string with double newlines between each document for better readability.    
+
+        system_prompt = self.system_prompt.format(
+            today=today,
+            last_blog=last_blog,
+            last_blog_date=last_blog_date,
+            contents=formatted_contents,
+            current_blogs=current_blogs,
         )
-        answers = ""
-        for chunk in stream:
-            if chunk.choices and chunk.choices[0].delta.content is not None:
-                answers += chunk.choices[0].delta.content.encode('utf-8').decode('utf-8')
-                yield chunk.choices[0].delta.content.encode('utf-8')
-        self.update_response_data(user_message, updated_system_prompt, answers)
+        return system_prompt
 
-    def update_response_data(self, user_message, updated_system_prompt, answers):
-        self.response_data.append({"role": "user", "content": user_message})
-        self.response_data.append({"role": "system", "content": updated_system_prompt})
-        self.response_data.append({"role": "assistant", "content": answers})
-        if len(self.response_data) > 15:
-            del self.response_data[:3]  # 古いデータを削除
+    def generate_response(self, user_message, system_prompt_with_context):
+        messages=[
+                {"role": "system", "content": system_prompt_with_context}, #Load first the system prompt with context, which includes the relevant documents and other information for the model to generate a response.
+                {"role": "system", "content": self.character_prompt}, #Load the character prompt, which defines the behavior and personality of the assistant.
+                *self.response_data, #Load the previous conversation history, which is stored in self.response_data. This allows the model to maintain context and continuity in the conversation.
+                {"role": "user", "content": user_message} #Finally, load the user message, which is the latest input from the user that the model needs to respond to.
+            ]
+
+
+        response = self.llm.invoke(messages)
+
+        return response.content #returns only the content of the response, which is the text generated by the model, excluding any metadata or additional information.
+
+    #used to maintain a history of the conversation, keeping only the last 14 messages to avoid exceeding token limits
+    def update_response_data(self, user_message, answers):
+        self.response_data.append({"role": "user", "content": user_message}) #store the user message in the response data
+        self.response_data.append({"role": "assistant", "content": answers}) #store the assistant's response in the response data
+        if len(self.response_data) > 14:
+            self.response_data = self.response_data[-14:]  # 古いデータを削除
+

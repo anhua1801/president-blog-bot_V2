@@ -1,9 +1,9 @@
 from flask import Flask, request, Response, render_template, stream_with_context
-from core.faiss_rag import RAGHandler
+from core.faiss_rag import RAGHandler, load_bot
 from core.csv_db_rag import search_Index 
 from utils.check_file import check_file_exists
-from langchain.vectorstores.faiss import FAISS
-from langchain_openai import AzureOpenAIEmbeddings
+from langchain_community.vectorstores import FAISS
+from langchain_openai import AzureChatOpenAI, AzureOpenAIEmbeddings
 from openai import AzureOpenAI
 import os
 import datetime
@@ -21,16 +21,16 @@ MODE = os.environ["MODE"]
 
 # Initialize models and vector store
 embedding = AzureOpenAIEmbeddings(
-    openai_api_version="2023-05-15",
-    azure_endpoint=AZURE_OPENAI_ENDPOINT,
-    openai_api_type="azure",
-    openai_api_key=AZURE_OPENAI_API_KEY,
-    model=EM_MODELS,
-)
+        azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"],
+        azure_deployment=os.environ["EM_MODELS"],
+        tiktoken_model_name="text-embedding-3-large",
+        check_embedding_ctx_length=False
+        )
 
-
-# vector_store = FAISS.load_local(f"{FILE_PATH}/db/faiss", embeddings=embedding, allow_dangerous_deserialization=True)
-client = AzureOpenAI(api_key=AZURE_OPENAI_API_KEY, api_version="2024-08-01-preview", azure_endpoint=AZURE_OPENAI_ENDPOINT)
+llm = AzureChatOpenAI(
+        azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"],
+        azure_deployment=os.environ["LLM_MODELS_TURBO"],
+        temperature=0)
 
 # Load prompts
 ## botのキャラクター性に関するもの
@@ -57,7 +57,7 @@ else:
 system_prompt = system_prompt.replace("today_date",(datetime.date.today()).strftime("%Y/%m/%d"))
 
 # Initialize RAGHandler
-rag_handler = RAGHandler(embedding, client, character_prompt, system_prompt)
+bot = load_bot(embedding, llm, character_prompt, system_prompt)
 
 # Flask app setup
 app = Flask(__name__)
@@ -72,11 +72,11 @@ def chat():
     if MODE == "csv_index":
         contents = search_Index(user_message, embedding)
     else:
-        contents = rag_handler.fetch_relevant_docs(user_message)
-    updated_system_prompt = rag_handler.update_system_prompt(contents)
+        contents = bot.fetch_relevant_docs(user_message)
+    updated_system_prompt = bot.update_system_prompt(contents)
 
     def generate():
-        yield from rag_handler.generate_stream(user_message, updated_system_prompt)
+        yield from bot.generate_stream(user_message, updated_system_prompt)
 
     return Response(stream_with_context(generate()), content_type='text/plain')
 

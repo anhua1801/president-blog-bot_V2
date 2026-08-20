@@ -8,7 +8,7 @@ from langchain_openai import AzureChatOpenAI, AzureOpenAIEmbeddings # AzureOpenA
 from langchain_core.documents import Document
 
 FILE_PATH = os.environ["FILE_PATH"].strip()
-file_path = f"{FILE_PATH}/db/knowledge_data.csv"
+file_path = f"{FILE_PATH}/data/knowledge_data.csv"
 
 
 AZURE_OPENAI_API_KEY = os.environ["AZURE_OPENAI_API_KEY"]
@@ -64,7 +64,7 @@ def chunking_data(file_path):
             )
         )
 
-    with open(f"{FILE_PATH}/db/knowledge_logs.txt", mode="w", encoding="utf-8") as file:
+    with open(f"{FILE_PATH}/data/knowledge_logs.txt", mode="w", encoding="utf-8") as file:
         file.write(str(documents))
 
     text_splitter = RecursiveCharacterTextSplitter(
@@ -92,5 +92,5 @@ for i in range(0, len(splitted_documents), batch_size):
     else:
         vector_store.add_documents(batch)                                            # resto: agrega
 
-vector_store.save_local(f"{FILE_PATH}/db")   # guarda igual que antes, al final
+vector_store.save_local(f"{FILE_PATH}/data/faiss")   # guarda igual que antes, al final
 print("¡Índice guardado! ✅")

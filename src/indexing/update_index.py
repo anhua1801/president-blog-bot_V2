@@ -70,7 +70,7 @@ def text2Vec(data, embedding):
 
 ### CSVファイルが対象の場合
 def csv_indexer(file_path, target_file, embeddings):
-    loader = CSVLoader(file_path=f"{file_path}/db/csv_index/add_data/{target_file}", encoding='utf-8')
+    loader = CSVLoader(file_path=f"{file_path}/data/csv_index/add_data/{target_file}", encoding='utf-8')
     docs = loader.load()
     text_splitter = RecursiveCharacterTextSplitter()
     documents = text_splitter.split_documents(docs)
@@ -99,12 +99,12 @@ def csv_indexer(file_path, target_file, embeddings):
 
 ## フォルダ異動
 def move_file(file_path, file_name):
-    shutil.move(f"{file_path}/db/csv_index/add_data/{file_name}", f'{file_path}/db/csv_index/stored_data')
+    shutil.move(f"{file_path}/data/csv_index/add_data/{file_name}", f'{file_path}/data/csv_index/stored_data')
     print("- 対象ファイルのベクトル化が終了しました。")
 
 ## Indexの操作（書き込み）
 def check_index(file_path, file_name, df):
-    csv_file = f"{file_path}/db/csv_index/vector_index.csv"
+    csv_file = f"{file_path}/data/csv_index/vector_index.csv"
     if os.path.exists(csv_file) == True:
         print("-- 既存のIndexに追加します。")
         df.to_csv(csv_file, mode='a', index=False, header=False, encoding='utf-8')
@@ -115,10 +115,10 @@ def check_index(file_path, file_name, df):
 
 ## 追加されたファイルがIndex化済みか確認
 def check_target_before_indexing(files, file_path):
-    files = os.listdir(f"{file_path}/db/csv_index/add_data")
+    files = os.listdir(f"{file_path}/data/csv_index/add_data")
     file_list = []
     for i in range(len(files)):
-        file_path = os.path.join(f"{file_path}/db/csv_index/stored_data", files[i])
+        file_path = os.path.join(f"{file_path}/data/csv_index/stored_data", files[i])
         if os.path.exists(file_path):
             print(f"{file_path} が存在します。")
         else:
@@ -127,7 +127,7 @@ def check_target_before_indexing(files, file_path):
     return file_list
 
 def main():
-    files = os.listdir(f"{FILE_PATH}/db/csv_index/add_data")
+    files = os.listdir(f"{FILE_PATH}/data/csv_index/add_data")
     file_check_list = check_target_before_indexing(files, FILE_PATH)
     df_stac = pd.DataFrame()
 
@@ -146,10 +146,10 @@ def main():
             check_index(FILE_PATH, target_file, df_stac)
         print("faissDBを構築開始いたします。")
         # ベクトルデータをロード
-        vectors, meta_data = load_csv_and_prepare_vectors(f"{FILE_PATH}/db/csv_index/vector_index.csv")
+        vectors, meta_data = load_csv_and_prepare_vectors(f"{FILE_PATH}/data/csv_index/vector_index.csv")
         # FAISSインデックスを作成し、メタデータを保存
-        faiss_index_path = f"{FILE_PATH}/db/csv_index/faiss_dump/faiss_index"
-        metadata_path = f"{FILE_PATH}/db/csv_index/faiss_dump/faiss_metadata.txt"
+        faiss_index_path = f"{FILE_PATH}/data/csv_index/faiss_dump/faiss_index"
+        metadata_path = f"{FILE_PATH}/data/csv_index/faiss_dump/faiss_metadata.txt"
         build_faiss_index_with_metadata(vectors, meta_data, faiss_index_path, metadata_path)
     else:
         print("追加されたファイルは無いようです。")
